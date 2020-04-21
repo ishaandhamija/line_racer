@@ -1,3 +1,5 @@
+import logging
+
 from django.conf import settings
 from rest_framework.response import Response
 from rest_framework import status
@@ -6,6 +8,11 @@ from rest_framework.decorators import api_view
 from master_app.models import LapMessage
 from master_process.common_utils import distance_between_points
 from master_process.constants import Constants
+from master_process.exceptions import REDIS_EXCEPTIONS, DB_EXCEPTIONS, CONNECTION_EXCEPTIONS
+
+logging.basicConfig()
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 
 def process_both_coordinates(x1, y1, x2, y2):
@@ -33,42 +40,62 @@ def check_other_port_redis_keys(redis_key_prefix, server_port, updated_x_coordin
     :param updated_y_coordinate:
     :return:
     """
-    other_port_x, other_port_y = settings.REDIS_DB.mget(
-        [
-            redis_key_prefix + Constants.X_COORDINATE_SUFFIX,
-            redis_key_prefix + Constants.Y_COORDINATE_SUFFIX
-        ]
-    )
-    if other_port_x and other_port_y:
-        process_both_coordinates(updated_x_coordinate, updated_y_coordinate,
-                                 float(other_port_x), float(other_port_y))
-        settings.REDIS_DB.delete(redis_key_prefix + Constants.X_COORDINATE_SUFFIX)
-        settings.REDIS_DB.delete(redis_key_prefix + Constants.Y_COORDINATE_SUFFIX)
-    else:
-        settings.REDIS_DB.mset({
-            server_port + Constants.X_COORDINATE_SUFFIX: updated_x_coordinate,
-            server_port + Constants.Y_COORDINATE_SUFFIX: updated_y_coordinate
-        })
+    try:
+        other_port_x, other_port_y = settings.REDIS_DB.mget(
+            [
+                redis_key_prefix + Constants.X_COORDINATE_SUFFIX,
+                redis_key_prefix + Constants.Y_COORDINATE_SUFFIX
+            ]
+        )
+        if other_port_x and other_port_y:
+            process_both_coordinates(updated_x_coordinate, updated_y_coordinate,
+                                     float(other_port_x), float(other_port_y))
+            settings.REDIS_DB.delete(redis_key_prefix + Constants.X_COORDINATE_SUFFIX)
+            settings.REDIS_DB.delete(redis_key_prefix + Constants.Y_COORDINATE_SUFFIX)
+        else:
+            settings.REDIS_DB.mset({
+                server_port + Constants.X_COORDINATE_SUFFIX: updated_x_coordinate,
+                server_port + Constants.Y_COORDINATE_SUFFIX: updated_y_coordinate
+            })
+
+    except REDIS_EXCEPTIONS as exc:
+        logger.error('CheckOtherPortRedisKeys: Error in redis connection - %s', exc)
+        raise exc
 
 
 @api_view(http_method_names=['POST'])
 def pos_message(request):
-    updated_x_coordinate = request.data.get('updated_x_coordinate')
-    updated_y_coordinate = request.data.get('updated_y_coordinate')
-    server_port = request.data.get('server_port')
+    try:
+        updated_x_coordinate = request.data.get('updated_x_coordinate')
+        updated_y_coordinate = request.data.get('updated_y_coordinate')
+        server_port = request.data.get('server_port')
 
-    redis_key_prefix = None
-    if server_port == settings.RACER_1_PORT:
-        redis_key_prefix = settings.RACER_2_PORT
-    elif server_port == settings.RACER_2_PORT:
-        redis_key_prefix = settings.RACER_1_PORT
+        redis_key_prefix = None
+        if server_port == settings.RACER_1_PORT:
+            redis_key_prefix = settings.RACER_2_PORT
+        elif server_port == settings.RACER_2_PORT:
+            redis_key_prefix = settings.RACER_1_PORT
 
-    if redis_key_prefix is not None:
-        check_other_port_redis_keys(redis_key_prefix, server_port, updated_x_coordinate, updated_y_coordinate)
+        if redis_key_prefix is not None:
+            check_other_port_redis_keys(redis_key_prefix, server_port, updated_x_coordinate, updated_y_coordinate)
+
+        return Response(
+            data={
+                "success": True
+            },
+            status=status.HTTP_200_OK
+        )
+    except REDIS_EXCEPTIONS as exc:
+        logger.error('PosMessageView: Error in redis connection - %s', exc)
+    except DB_EXCEPTIONS as exc:
+        logger.error('PosMessageView: Error in db connection - %s', exc)
+    except CONNECTION_EXCEPTIONS as exc:
+        logger.error('PosMessageView: Error in request connection - %s', exc)
 
     return Response(
         data={
-            "success": True
+            "success": False,
+            "message": "Internal Server Error"
         },
-        status=status.HTTP_200_OK
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR
     )

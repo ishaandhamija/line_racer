@@ -28,4 +28,5 @@ urlpatterns = [
 ]
 
 settings.REDIS_DB.set(Constants.PROCESS_ID, str(uuid4()))
+settings.REDIS_DB.set(Constants.LAP_COUNT, 0)
 LapMessage.send_new_message_to_racers()
